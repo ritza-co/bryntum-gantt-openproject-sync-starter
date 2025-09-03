@@ -1,0 +1,20 @@
+{
+  "name": "bryntum-gantt-openproject",
+  "version": "1.0.0",
+  "description": "How to connect and sync Bryntum Gantt to OpenProject Gantt",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
+    "install-all": "npm install && npm install --workspace=backend && npm install --workspace=frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  }
+}
