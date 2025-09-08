@@ -14,7 +14,7 @@ The following npm packages were added to the backend:
 Install the dependencies in the root, frontend and backend, by running the following command from the root directory: 
 
 ```sh
-npm install-all
+npm run install-all
 ```
 
 ## Running the frontend and backend apps at the same time
