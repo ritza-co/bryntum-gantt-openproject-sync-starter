@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const TaskSchema = z.object({
     id                : z.number(),
+    $PhantomId        : z.string().optional(),
     name              : z.string().optional(),
     startDate         : z.string().optional(),
     endDate           : z.string().optional(),
@@ -10,7 +11,9 @@ export const TaskSchema = z.object({
     parentId          : z.number().optional(),
     expanded          : z.boolean().optional(),
     rollup            : z.boolean().optional(),
-    manuallyScheduled : z.boolean().optional()
+    manuallyScheduled : z.boolean().optional(),
+    type              : z.string().optional(),
+    status            : z.string().optional()
 });
 
 export const DependencySchema = z.object({

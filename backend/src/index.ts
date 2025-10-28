@@ -93,18 +93,31 @@ app.post('/api/openproject/sync', async(req, res) => {
             if (tasks.added) {
                 for (const task of tasks.added) {
                     const { $PhantomId, ...taskData } = task;
-                    const openProjectPayload = mapBryntumToOpenProject(taskData);
+                    let type = 'Task';
+                    if (task.duration === 0) {
+                        type = 'Milestone';
+                    }
+                    const openProjectPayload = mapBryntumToOpenProject(taskData, type);
 
                     const newWorkPackage = await makeOpenProjectRequest('/api/v3/work_packages', {
                         method : 'POST',
                         body   : JSON.stringify(openProjectPayload)
                     });
 
-                    // For creates, only return phantom ID mapping and the real ID
-                    syncSuccessResponse.tasks.rows.push({
+                    const response: TaskSchemaType = {
                         $PhantomId : $PhantomId,
-                        id         : newWorkPackage.id
-                    });
+                        id         : newWorkPackage.id,
+                        type       : type,
+                        status     : 'New'
+                    };
+
+                    // If this is a milestone, return the date that was set
+                    if (type === 'Milestone' && newWorkPackage.date) {
+                        response.startDate = newWorkPackage.date;
+                        response.endDate = newWorkPackage.date;
+                    }
+
+                    syncSuccessResponse.tasks.rows.push(response);
                 }
             }
 
@@ -124,34 +137,128 @@ app.post('/api/openproject/sync', async(req, res) => {
                     if (task.name !== undefined) {
                         updatePayload.subject = task.name;
                     }
-                    if (task.startDate !== undefined) {
-                        updatePayload.startDate = formatDateForOpenProject(task.startDate);
+
+                    // If inactive is false, convert to summary/phase task
+                    if (task.inactive === false) {
+                        updatePayload._links!.type = {
+                            href  : '/api/v3/types/3',
+                            title : 'Phase'
+                        };
                     }
-                    if (task.endDate !== undefined) {
-                        updatePayload.dueDate = formatDateForOpenProject(task.endDate);
+                    // If duration is updated to 0, convert to milestone
+                    else if (task.duration === 0) {
+                        // Set milestone date - use startDate or endDate if provided, otherwise use current date
+                        const milestoneDate = task.startDate || task.endDate || currentWorkPackage.date || currentWorkPackage.startDate || new Date().toISOString();
+                        updatePayload.date = formatDateForOpenProject(milestoneDate);
+                        updatePayload.startDate = null;
+                        updatePayload.dueDate = null;
+
+                        // Update type to Milestone
+                        updatePayload._links!.type = {
+                            href  : '/api/v3/types/2',
+                            title : 'Milestone'
+                        };
                     }
+                    else if (task.duration !== undefined && task.duration >= 1 && currentWorkPackage._links.type?.title === 'Milestone') {
+                        // If duration is updated to 1 or more and it was a milestone, convert to task
+                        // Set startDate and dueDate - use provided values or calculate from milestone date
+                        if (task.startDate !== undefined) {
+                            updatePayload.startDate = formatDateForOpenProject(task.startDate);
+                        }
+                        else if (task.endDate !== undefined) {
+                            // Calculate startDate from endDate and duration
+                            // Bryntum duration represents the span, so subtract duration from endDate
+                            const endDate = new Date(task.endDate);
+                            const startDate = new Date(endDate);
+                            startDate.setDate(endDate.getDate() - task.duration);
+                            updatePayload.startDate = formatDateForOpenProject(startDate.toISOString());
+                        }
+                        else {
+                            // Use the milestone date as startDate
+                            updatePayload.startDate = currentWorkPackage.date;
+                        }
+
+                        if (task.endDate !== undefined) {
+                            updatePayload.dueDate = formatDateForOpenProject(task.endDate);
+                        }
+                        else if (task.startDate !== undefined) {
+                            // Calculate dueDate from startDate and duration
+                            // Bryntum duration represents the span, so add duration to startDate
+                            const startDate = new Date(task.startDate);
+                            const endDate = new Date(startDate);
+                            endDate.setDate(startDate.getDate() + task.duration);
+                            updatePayload.dueDate = formatDateForOpenProject(endDate.toISOString());
+                        }
+                        else {
+                            // Calculate dueDate from milestone date and duration
+                            // Bryntum duration represents the span, so add duration to startDate
+                            const startDate = new Date(currentWorkPackage.date || new Date());
+                            const endDate = new Date(startDate);
+                            endDate.setDate(startDate.getDate() + task.duration);
+                            updatePayload.dueDate = formatDateForOpenProject(endDate.toISOString());
+                        }
+
+                        // Don't send date field for tasks - only set it to null if needed
+                        // Don't set duration when we have startDate and dueDate
+                        // OpenProject will calculate it automatically
+
+                        // Update type to Task
+                        updatePayload._links!.type = {
+                            href  : '/api/v3/types/1',
+                            title : 'Task'
+                        };
+                    }
+                    else {
+                        // Regular task updates
+                        if (task.startDate !== undefined) {
+                            updatePayload.startDate = formatDateForOpenProject(task.startDate);
+                        }
+                        if (task.endDate !== undefined) {
+                            updatePayload.dueDate = formatDateForOpenProject(task.endDate);
+                        }
+                        if (task.duration !== undefined && !(task.startDate && task.endDate)) {
+                            updatePayload.duration = task.duration ? `P${task.duration}D` : null;
+                        }
+                    }
+
                     if (task.percentDone !== undefined) {
                         updatePayload.percentageDone = task.percentDone;
                     }
                     if (task.status !== undefined) {
                         const statusHref = getStatusHrefForTitle(task.status);
                         if (statusHref) {
-                        updatePayload._links!.status = { href : statusHref, title : task.status };
+                            updatePayload._links!.status = { href : statusHref, title : task.status };
                         }
                     }
-                    // Only set duration if we don't have both start and due dates
-                    // OpenProject will calculate duration automatically from dates
-                    if (task.duration !== undefined && !(task.startDate && task.endDate)) {
-                        updatePayload.duration = task.duration ? `P${task.duration}D` : null;
-                    }
 
-                    await makeOpenProjectRequest(`/api/v3/work_packages/${task.id}`, {
+                    const updatedWorkPackage = await makeOpenProjectRequest(`/api/v3/work_packages/${task.id}`, {
                         method : 'PATCH',
                         body   : JSON.stringify(updatePayload)
                     });
 
-                    // For updates, don't return anything in the response
-                    // Bryntum will use the client values since no server changes are returned
+                    // If converted to Summary task, return the type
+                    if (task.inactive === false) {
+                        syncSuccessResponse.tasks.rows.push({
+                            id   : task.id,
+                            type : 'Summary task'
+                        });
+                    }
+                    // If converted to milestone, return the date and type so Bryntum can update the display
+                    else if (task.duration === 0 && updatedWorkPackage.date) {
+                        syncSuccessResponse.tasks.rows.push({
+                            id        : task.id,
+                            startDate : updatedWorkPackage.date,
+                            endDate   : updatedWorkPackage.date,
+                            type      : 'Milestone'
+                        });
+                    }
+                    // If converted from milestone to task, return the type
+                    else if (task.duration !== undefined && task.duration >= 1 && currentWorkPackage._links.type?.title === 'Milestone') {
+                        syncSuccessResponse.tasks.rows.push({
+                            id   : task.id,
+                            type : 'Task'
+                        });
+                    }
                 }
             }
 
@@ -253,12 +360,10 @@ const getStatusHrefForTitle = (statusTitle: string): string | null => {
 };
 
 // Data mapping functions between Bryntum Gantt and OpenProject
-const mapBryntumToOpenProject = (task: TaskSchemaType) => {
+const mapBryntumToOpenProject = (task: TaskSchemaType, type: string) => {
     const payload: Partial<WorkPackage> = {
         subject              : task.name ?? '',
         scheduleManually     : true,  // use manual scheduling to avoid constraints
-        startDate            : task.startDate ? formatDateForOpenProject(task.startDate) : null,
-        dueDate              : task.endDate ? formatDateForOpenProject(task.endDate) : null,
         estimatedTime        : null,
         ignoreNonWorkingDays : false,
         percentageDone       : task.percentDone || null,
@@ -267,8 +372,8 @@ const mapBryntumToOpenProject = (task: TaskSchemaType) => {
                 href : null
             },
             type : {
-                href  : '/api/v3/types/1',
-                title : 'Task'
+                href  : type === 'Milestone' ? '/api/v3/types/2' : '/api/v3/types/1',
+                title : type
             },
             priority : {
                 href  : '/api/v3/priorities/8',
@@ -313,9 +418,22 @@ const mapBryntumToOpenProject = (task: TaskSchemaType) => {
         }
     };
 
-    // Only add duration if it's a positive number
-    if (task.duration !== undefined && task.duration !== null && task.duration > 0) {
-        payload.duration = `P${task.duration}D`;
+    // Handle date fields differently for milestones vs tasks
+    if (type === 'Milestone') {
+        // Milestones only have a 'date' field, no startDate or dueDate
+        // Use startDate if provided, otherwise use endDate, otherwise use today's date
+        const milestoneDate = task.startDate || task.endDate || new Date().toISOString();
+        payload.date = formatDateForOpenProject(milestoneDate);
+    }
+    else {
+        // Tasks have startDate and dueDate
+        payload.startDate = task.startDate ? formatDateForOpenProject(task.startDate) : null;
+        payload.dueDate = task.endDate ? formatDateForOpenProject(task.endDate) : null;
+
+        // Only add duration if it's a positive number
+        if (task.duration !== undefined && task.duration !== null && task.duration > 0) {
+            payload.duration = `P${task.duration}D`;
+        }
     }
 
     // For updates, we need lockVersion and should omit _links structure

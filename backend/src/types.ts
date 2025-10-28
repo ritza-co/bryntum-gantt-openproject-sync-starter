@@ -16,7 +16,7 @@ export type WorkPackage = {
   subject: string;
   startDate?: string | null;
   dueDate?: string | null;
-  date: string;
+  date?: string | null;
   duration?: string | number | null;
   estimatedTime?: string | number | null;
   ignoreNonWorkingDays: boolean;
